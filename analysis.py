@@ -231,6 +231,42 @@ print(f"  Baseline recon error: mean={baseline_recon.mean():.4f}, std={baseline_
 print(f"  Max anomaly recon error: {recon_error[~baseline_mask].max():.2f}")
 print()
 
+# ── 6d. Method 6 -- Sliding-Window CUSUM Detector ────────────────────────────
+# Motivation: per-point methods (Z-Score, LOF, etc.) miss gradual drift because
+# individual points look normal.  A sliding window smooths noise and tests whether
+# the LOCAL MEAN has shifted away from the baseline mean -- catching trends that
+# point-wise methods cannot.
+#
+# CUSUM-inspired: flag a point if its rolling-window average deviates more than
+# `cusum_zscore_thresh` standard deviations from the baseline mean.
+
+WINDOW_SIZE = 15        # rolling window width
+CUSUM_ZSCORE_THRESH = 2.0  # z-score on rolling means (lower = more sensitive)
+
+t0 = _time.perf_counter()
+
+# Compute statistics of baseline rolling means (the "noise floor" for windows)
+baseline_pss = combined.loc[baseline_mask, "pss"].values
+baseline_rolling = pd.Series(baseline_pss).rolling(WINDOW_SIZE, min_periods=1).mean()
+roll_mean_base = baseline_rolling.mean()
+roll_std_base  = baseline_rolling.std()
+
+# Rolling mean over the entire combined series
+pss_rolling = combined["pss"].rolling(WINDOW_SIZE, min_periods=1).mean()
+
+# Flag: rolling mean deviates by > CUSUM_ZSCORE_THRESH sigma from baseline rolling mean
+cusum_zscore = (pss_rolling - roll_mean_base) / roll_std_base
+combined["cusum"] = np.where(np.abs(cusum_zscore) > CUSUM_ZSCORE_THRESH, -1, 1)
+
+t1 = _time.perf_counter()
+timing_results["CUSUM-Window"] = {"train": 0.0, "predict": t1 - t0}
+
+n_cusum = (combined["cusum"] == -1).sum()
+print(f"Sliding-Window CUSUM: window={WINDOW_SIZE}, z-thresh={CUSUM_ZSCORE_THRESH}")
+print(f"  Baseline rolling mean: {roll_mean_base:.2f}, std: {roll_std_base:.4f}")
+print(f"  Flagged: {n_cusum} anomalies")
+print()
+
 # ── 7. Evaluation ────────────────────────────────────────────────────────────
 
 y_true = combined["is_anomaly"].values  # 1 = anomaly, 0 = normal
@@ -242,7 +278,8 @@ print(f"{'Method':<18} {'Precision':>10} {'Recall':>10} {'F1':>10}   {'TP':>5} {
 print("-" * 72)
 
 methods = [("zscore", "Z-Score"), ("lof", "LOF"), ("ocsvm", "OC-SVM"),
-           ("elliptic", "Elliptic Env."), ("autoenc", "Autoencoder")]
+           ("elliptic", "Elliptic Env."), ("autoenc", "Autoencoder"),
+           ("cusum", "CUSUM-Window")]
 results = {}
 
 for col, label in methods:
@@ -584,14 +621,15 @@ for idx, (wname, ws, we, wc) in enumerate(WINDOW_DEFS):
     ax.axvline(ws, color=wc, ls="--", lw=1, alpha=0.7)
     ax.axvline(we - 1, color=wc, ls="--", lw=1, alpha=0.7)
     for col_name, lab, mk in [("zscore","Z","o"), ("lof","LOF","s"), ("ocsvm","SVM","D"),
-                               ("elliptic","Ell","^"), ("autoenc","AE","v")]:
+                               ("elliptic","Ell","^"), ("autoenc","AE","v"),
+                               ("cusum","CUSUM","P")]:
         m = seg[col_name] == -1
         if m.any():
             ax.scatter(seg.loc[m, "t"], seg.loc[m, "pss"], marker=mk, s=28,
                        zorder=5, alpha=0.7, label=lab)
     ax.set_ylabel("PSS (kB)")
     ax.set_title(f"{wname} (t={ws}-{we-1}, {we-ws} pts)")
-    ax.legend(fontsize=6, ncol=5)
+    ax.legend(fontsize=6, ncol=6)
 
 # Hide the 6th (empty) subplot
 axes.flat[5].set_visible(False)
