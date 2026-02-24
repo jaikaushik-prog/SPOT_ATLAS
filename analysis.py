@@ -1,6 +1,5 @@
 """
 prmon Anomaly Detection Pipeline — Combined Time-Series
-=========================================================
 Builds a single combined time-series by interleaving baseline segments with
 four injected anomaly windows (subtle CPU, extreme CPU, hard memory, extreme
 memory).  Three novelty-detection methods (Z-Score, LOF, One-Class SVM) are
@@ -21,7 +20,7 @@ from sklearn.covariance import EllipticEnvelope
 from sklearn.neural_network import MLPRegressor
 from sklearn.metrics import precision_score, recall_score, f1_score
 
-# ── 1. Data Loading ──────────────────────────────────────────────────────────
+#  1. Data Loading 
 
 FEATURES = ["pss", "rss", "vmem", "utime", "stime", "nthreads"]
 
@@ -49,24 +48,21 @@ print(f"Loaded  cpu_subtle:   {len(cpu_subtle)} rows")
 print(f"Loaded  mem_extreme:  {len(mem_extreme)} rows")
 print(f"Loaded  mem_hard:     {len(mem_hard)} rows\n")
 
-# ── 2. Build Combined Time-Series ────────────────────────────────────────────
+#  2. Build Combined Time-Series 
 #
 # UPDATED per mentor feedback: test moderate anomalies (a few sigmas from baseline).
-#
-# Layout: [B0] [3sig] [B1] [5sig] [B2] [drift] [B3] [ext_cpu] [B4] [ext_mem] [B5]
-# Labels:  0     1      0     2     0      3      0      4        0      5       0
 #
 # Windows 1-3 are SYNTHETIC moderate anomalies created by perturbing baseline PSS.
 # Windows 4-5 are REAL extreme anomalies from stress-ng for contrast.
 
 np.random.seed(42)
 
-# -- Baseline statistics for synthetic anomaly generation --
+#  Baseline statistics for synthetic anomaly generation 
 pss_mean = baseline["pss"].mean()
 pss_std  = baseline["pss"].std()
 print(f"Baseline PSS: mean={pss_mean:.2f}, std={pss_std:.4f}")
 
-# -- Helper: create a synthetic anomaly segment from baseline rows --
+# create a synthetic anomaly segment from baseline rows 
 def make_synthetic(base_rows, pss_values, label):
     """Clone baseline rows and replace PSS with controlled values."""
     seg = base_rows.copy()
@@ -107,7 +103,7 @@ seg_cpu_ext["label"] = 4
 seg_mem_ext = mem_extreme.iloc[80:140].copy()   # 60 pts
 seg_mem_ext["label"] = 5
 
-# -- Assemble combined series --
+#        assemble combined series 
 segments = [seg_b0, seg_3sig, seg_b1, seg_5sig, seg_b2, seg_drift,
             seg_b3, seg_cpu_ext, seg_b4, seg_mem_ext, seg_b5]
 seg_names = ["B0", "3sig", "B1", "5sig", "B2", "drift",
@@ -141,7 +137,7 @@ print(f"  Extreme CPU (real):     {(combined['label']==4).sum()}  (t={cpu_ext_st
 print(f"  Extreme memory (real):  {(combined['label']==5).sum()}  (t={mem_ext_start}..{mem_ext_end-1})")
 print()
 
-# ── 3. Scaling (fit on baseline-only portion) ────────────────────────────────
+#  3. Scaling (fit on baseline-only portion) 
 
 # Training data: only the clean baseline segments
 baseline_mask = combined["label"] == 0
@@ -153,7 +149,7 @@ train_X_scaled = scaler.fit_transform(train_X)
 # Transform the entire combined series
 all_X_scaled = scaler.transform(combined[FEATURES].values)
 
-# ── 4. Method 1 – Z-Score ────────────────────────────────────────────────────
+#  4. Method 1 – Z-Score 
 
 ZSCORE_THRESH = 3.0
 
@@ -164,13 +160,13 @@ import time as _time
 
 timing_results = {}
 
-# ── Method 1: Z-Score ──
+#  Method 1: Z-Score 
 t0 = _time.perf_counter()
 combined["zscore"] = zscore_detect(all_X_scaled)
 t1 = _time.perf_counter()
 timing_results["Z-Score"] = {"train": 0.0, "predict": t1 - t0}
 
-# ── 5. Method 2 – Local Outlier Factor (novelty detection) ───────────────────
+#  5. Method 2 – Local Outlier Factor (novelty detection) 
 
 t0 = _time.perf_counter()
 lof = LocalOutlierFactor(n_neighbors=20, contamination=0.02, novelty=True)
@@ -180,7 +176,7 @@ combined["lof"] = lof.predict(all_X_scaled)
 t2 = _time.perf_counter()
 timing_results["LOF"] = {"train": t1 - t0, "predict": t2 - t1}
 
-# ── 6. Method 3 – One-Class SVM ─────────────────────────────────────────────
+#  6. Method 3  One-Class SVM 
 
 t0 = _time.perf_counter()
 ocsvm = OneClassSVM(kernel="rbf", gamma="scale", nu=0.05)
@@ -190,7 +186,7 @@ combined["ocsvm"] = ocsvm.predict(all_X_scaled)
 t2 = _time.perf_counter()
 timing_results["OC-SVM"] = {"train": t1 - t0, "predict": t2 - t1}
 
-# ── 6b. Method 4 -- Elliptic Envelope (Gaussian covariance) ──────────────────
+#  6b. Method 4  Elliptic Envelope (Gaussian covariance) 
 
 t0 = _time.perf_counter()
 ee = EllipticEnvelope(contamination=0.02, support_fraction=0.999)
@@ -200,7 +196,7 @@ combined["elliptic"] = ee.predict(all_X_scaled)
 t2 = _time.perf_counter()
 timing_results["Elliptic Env."] = {"train": t1 - t0, "predict": t2 - t1}
 
-# ── 6c. Method 5 -- Autoencoder (reconstruction error) ───────────────────────
+#  6c. Method 5  Autoencoder (reconstruction error) 
 # Train a small MLP to reconstruct baseline features.  Anomalies have high
 # reconstruction error because the network only learned normal patterns.
 
@@ -231,10 +227,10 @@ print(f"  Baseline recon error: mean={baseline_recon.mean():.4f}, std={baseline_
 print(f"  Max anomaly recon error: {recon_error[~baseline_mask].max():.2f}")
 print()
 
-# ── 6d. Method 6 -- Sliding-Window CUSUM Detector ────────────────────────────
+#  6d. Method 6  Sliding-Window CUSUM Detector 
 # Motivation: per-point methods (Z-Score, LOF, etc.) miss gradual drift because
 # individual points look normal.  A sliding window smooths noise and tests whether
-# the LOCAL MEAN has shifted away from the baseline mean -- catching trends that
+# the LOCAL MEAN has shifted away from the baseline mean catching trends that
 # point-wise methods cannot.
 #
 # CUSUM-inspired: flag a point if its rolling-window average deviates more than
@@ -267,7 +263,7 @@ print(f"  Baseline rolling mean: {roll_mean_base:.2f}, std: {roll_std_base:.4f}"
 print(f"  Flagged: {n_cusum} anomalies")
 print()
 
-# ── 7. Evaluation ────────────────────────────────────────────────────────────
+#  7. Evaluation 
 
 y_true = combined["is_anomaly"].values  # 1 = anomaly, 0 = normal
 
@@ -299,7 +295,7 @@ n_anom = int(y_true.sum())
 print(f"Total: {n_total} points  |  Normal: {n_total - n_anom}  |  Anomalous: {n_anom}")
 print()
 
-# ── 7b. False Positive Investigation ─────────────────────────────────────────
+#  7b. False Positive Investigation 
 
 for col, label in methods:
     fp_mask = (combined[col] == -1) & (combined["is_anomaly"] == 0)
@@ -322,7 +318,7 @@ for col, label in methods:
                 print(f"         (flagged by {label}, not z-score)")
         print()
 
-# ── 7c. Feature Ablation Study ───────────────────────────────────────────────
+#  7c. Feature Ablation Study 
 # Test which features matter most by running all 3 detectors on different subsets.
 
 FEATURE_SETS = {
@@ -393,7 +389,7 @@ print("=" * 100)
 print("FN = false negatives (missed anomalies out of 220)")
 print()
 
-# ── 7d. Per-Window Recall Breakdown ──────────────────────────────────────────
+#  7d. Per-Window Recall Breakdown 
 
 WINDOW_LABELS = {
     1: ("3-sigma (synthetic)",  sig3_start,    sig3_end),
@@ -426,7 +422,7 @@ for lbl_val, (wname, ws, we) in WINDOW_LABELS.items():
 print("=" * 110)
 print()
 
-# ── 7e. Feature Ablation Heatmap (Plot 5) ────────────────────────────────────
+#  7e. Feature Ablation Heatmap (Plot 5) 
 
 fig, ax = plt.subplots(figsize=(10, 7))
 
@@ -524,7 +520,7 @@ fig.tight_layout()
 fig.savefig("plot6_zscore_threshold_sensitivity.png", dpi=150)
 plt.close(fig)
 
-# ── 8. Visualization ────────────────────────────────────────────────────────
+#  8. Visualization 
 
 plt.style.use("seaborn-v0_8-darkgrid")
 COL_NORMAL   = "#2196F3"
@@ -549,9 +545,7 @@ def shade_windows(ax, label_it=True):
         kw = {"label": wname} if label_it else {}
         ax.axvspan(ws, we - 1, alpha=0.18, color=wc, **kw)
 
-# ────────────────────────────────────────────────────────────────────────────
 # Plot 1: Multi-Feature Overview (PSS + utime + nthreads)
-# ────────────────────────────────────────────────────────────────────────────
 
 fig, axes = plt.subplots(3, 1, figsize=(16, 9), sharex=True)
 fig.suptitle("Combined Time-Series -- Multi-Feature Overview (5 Anomaly Windows)", fontsize=14)
@@ -580,9 +574,7 @@ fig.tight_layout()
 fig.savefig("plot1_multifeature_overview.png", dpi=150)
 plt.close(fig)
 
-# ────────────────────────────────────────────────────────────────────────────
 # Plot 2: Detection Overlay (log-scale PSS with flagged points per method)
-# ────────────────────────────────────────────────────────────────────────────
 
 fig, axes = plt.subplots(len(methods), 1, figsize=(16, 12), sharex=True)
 fig.suptitle("Anomaly Detection Results — Per Method (log-scale PSS)", fontsize=14, y=1.01)
@@ -605,9 +597,7 @@ fig.tight_layout()
 fig.savefig("plot2_detection_overlay.png", dpi=150)
 plt.close(fig)
 
-# ────────────────────────────────────────────────────────────────────────────
 # Plot 3: Zoomed-In Anomaly Windows (3x2 grid, one per window)
-# ────────────────────────────────────────────────────────────────────────────
 
 fig, axes = plt.subplots(3, 2, figsize=(16, 12))
 fig.suptitle("Zoomed-In Anomaly Windows -- PSS with Detection Flags", fontsize=14)
@@ -641,9 +631,7 @@ fig.tight_layout()
 fig.savefig("plot3_zoomed_windows.png", dpi=150)
 plt.close(fig)
 
-# ────────────────────────────────────────────────────────────────────────────
 # Plot 4: Method Comparison Bar Chart (Precision / Recall / F1)
-# ────────────────────────────────────────────────────────────────────────────
 
 fig, ax = plt.subplots(figsize=(9, 5))
 method_labels = [label for _, label in methods]
@@ -674,11 +662,9 @@ fig.tight_layout()
 fig.savefig("plot4_method_comparison.png", dpi=150)
 plt.close(fig)
 
-# ────────────────────────────────────────────────────────────────────────────
 # Plot 7: Autoencoder Reconstruction Error
 # Shows the per-sample MSE across the time series. Normal data has near-zero
 # error; anomalies spike dramatically.
-# ────────────────────────────────────────────────────────────────────────────
 
 fig, ax = plt.subplots(figsize=(16, 5))
 
@@ -695,9 +681,7 @@ fig.tight_layout()
 fig.savefig("plot7_autoencoder_recon_error.png", dpi=150)
 plt.close(fig)
 
-# ────────────────────────────────────────────────────────────────────────────
 # Plot 8: Elliptic Envelope Decision Scores
-# ────────────────────────────────────────────────────────────────────────────
 
 ee_scores = ee.decision_function(all_X_scaled)
 fig, ax = plt.subplots(figsize=(16, 5))
@@ -713,9 +697,8 @@ fig.tight_layout()
 fig.savefig("plot8_elliptic_envelope_scores.png", dpi=150)
 plt.close(fig)
 
-# ────────────────────────────────────────────────────────────────────────────
+
 # Computational Cost Table
-# ────────────────────────────────────────────────────────────────────────────
 
 print("=" * 70)
 print("              Computational Cost Comparison")
@@ -730,10 +713,8 @@ for mname in ["Z-Score", "LOF", "OC-SVM", "Elliptic Env.", "Autoencoder"]:
 print("=" * 70)
 print()
 
-# ────────────────────────────────────────────────────────────────────────────
 # Plot 9: ROC Curves
 # Uses continuous anomaly scores from methods that support decision_function.
-# ────────────────────────────────────────────────────────────────────────────
 
 from sklearn.metrics import roc_curve, roc_auc_score
 
@@ -777,9 +758,7 @@ for mname, scores in roc_methods.items():
 print("=" * 50)
 print()
 
-# ────────────────────────────────────────────────────────────────────────────
 # Plot 10: Confusion Matrix Grid (5 panels)
-# ────────────────────────────────────────────────────────────────────────────
 
 from sklearn.metrics import confusion_matrix
 
